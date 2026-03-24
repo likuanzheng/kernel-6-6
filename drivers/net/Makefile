@@ -89,3 +89,4 @@ obj-$(CONFIG_FUJITSU_ES) += fjes/
 obj-$(CONFIG_USB4_NET) += thunderbolt/
 obj-$(CONFIG_NETDEVSIM) += netdevsim/
 obj-$(CONFIG_NET_FAILOVER) += net_failover.o
+obj-$(CONFIG_CCSDS_NET) += ccsds/

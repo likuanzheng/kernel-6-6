@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config CCSDS_NET
+	tristate "CCSDS virtual network interface (ccsdsnet + ccsdssim)"
+	depends on INET
+	help
+	  Creates a virtual network interface "ccsdsnet" connected directly
+	  to the IP layer (no Ethernet headers), paired with a character
+	  device /dev/ccsdssim for injecting and extracting raw IP packets
+	  from user space.
+
+	  Useful for simulating CCSDS space links without real hardware.
+
+	  To compile this driver as a loadable module, choose M here:
+	  the module will be called ccsds.
