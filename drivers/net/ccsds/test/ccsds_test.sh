@@ -4,15 +4,16 @@
 # ccsds_test.sh - End-to-end test for ccsdsnet + ccsdssim
 #
 # Test cases:
-#   T1  Module load:         insmod ccsds.ko
-#   T2  Char device:         /dev/ccsdssim is a character device
-#   T3  Net device:          ccsdsnet appears in ip link
-#   T4  Interface up:        ip link set ccsdsnet up + ip addr add
-#   T5  TX path:             ICMP echo request readable from /dev/ccsdssim
-#   T6  RX path:             raw IP packet written to /dev/ccsdssim reaches stack
-#   T7  Ping loopback:       ping with sim_echo running -> replies received
-#   T8  Stats:               tx_packets / rx_packets non-zero after T7
-#   T9  Module unload:       rmmod succeeds, netdev + chardev gone
+#   T1  Module load:          insmod ccsds.ko
+#   T2  Char device:          /dev/ccsdssim is a character device
+#   T3  Net device:           ccsdsnet appears in ip link
+#   T4  Interface up:         ip link set ccsdsnet up + IPv4/IPv6 addr add
+#   T5  TX path:              ICMP echo request readable from /dev/ccsdssim
+#   T6  RX path:              raw IP packet written to /dev/ccsdssim reaches stack
+#   T7  IPv4 ping loopback:   ping (ICMPv4) with sim_echo -> replies received
+#   T8  IPv6 ping loopback:   ping6 (ICMPv6) with sim_echo -> replies received
+#   T9  Stats:                tx_packets / rx_packets non-zero after T7+T8
+#   T10 Module unload:        rmmod succeeds, netdev + chardev gone
 #
 # Prerequisites:
 #   - Run as root
@@ -33,6 +34,9 @@ NET_DEV="ccsdsnet"
 LOCAL_IP="10.99.1.1"
 PEER_IP="10.99.1.2"
 PREFIX=24
+IPv6_LOCAL="fd00::1"
+IPv6_PEER="fd00::2"
+IPv6_PREFIX=64
 
 # ── Counters ─────────────────────────────────────────────────────────────────
 PASS=0
@@ -120,7 +124,7 @@ ip addr add "${LOCAL_IP}/${PREFIX}" dev "$NET_DEV" 2>/dev/null || true
 # For ARPHRD_NONE point-to-point devices the state shows as UNKNOWN even when
 # up; check the flags word (<...>) instead.
 if ip link show "$NET_DEV" | head -1 | grep -q ',UP[,>]'; then
-	pass "ccsdsnet is UP with IP $LOCAL_IP/$PREFIX"
+	pass "ccsdsnet is UP  IPv4=$LOCAL_IP/$PREFIX"
 else
 	fail "ccsdsnet not UP"
 fi
@@ -136,15 +140,18 @@ kill "$PING_PID" 2>/dev/null || true
 wait "$PING_PID" 2>/dev/null || true
 
 # ccsds_sim_read prints the IP version (4/6) to stdout; exits 1 if EAGAIN.
-VERSION=$("$SIM_READ" 2>/dev/null) && TX_OK=1 || TX_OK=0
+# Loop to skip any queued IPv6 packets (e.g. RS auto-sent when IPv6 is loaded).
+TX_OK=0
+tries=0
+while [ $tries -lt 8 ]; do
+	VERSION=$("$SIM_READ" 2>/dev/null) || break
+	tries=$((tries + 1))
+	if [ "$VERSION" = "4" ]; then TX_OK=1; break; fi
+done
 if [ "$TX_OK" -eq 1 ]; then
-	if [ "$VERSION" = "4" ]; then
-		pass "TX: read IPv4 packet from /dev/ccsdssim"
-	else
-		fail "TX: unexpected IP version '$VERSION'"
-	fi
+	pass "TX: read IPv4 packet from /dev/ccsdssim"
 else
-	fail "TX: no packet in /dev/ccsdssim (queue empty)"
+	fail "TX: no IPv4 packet in /dev/ccsdssim (queue empty or only IPv6)"
 fi
 
 # T6 – RX path: sim -> IP stack
@@ -159,10 +166,10 @@ else
 	fail "RX: rx_packets still 0 after injection"
 fi
 
-# T7 – Full ping loopback via sim_echo
+# T7 – IPv4 ping loopback via sim_echo
 echo
-echo "--- T7: ping loopback via ccsds_sim_echo ---"
-"$SIM_ECHO" "$SIM_DEV" >"$SCRIPT_DIR/sim_echo.log" 2>&1 &
+echo "--- T7: IPv4 ping loopback via ccsds_sim_echo ---"
+"$SIM_ECHO" "$SIM_DEV" 2>"$SCRIPT_DIR/sim_echo.log" &
 SIM_PID=$!
 sleep 1  # give it time to open the device
 
@@ -184,16 +191,61 @@ kill "$SIM_PID" 2>/dev/null || true
 wait "$SIM_PID" 2>/dev/null || true
 SIM_PID=""
 
-if [ "$RECEIVED" -gt 0 ]; then
-	pass "Ping loopback: $RECEIVED/4 replies received"
+if [ "${RECEIVED:-0}" -gt 0 ]; then
+	pass "IPv4 ping loopback: $RECEIVED/4 replies received"
 else
-	fail "Ping loopback: 0 replies (sim_echo log below)"
+	fail "IPv4 ping loopback: 0 replies (sim_echo log below)"
 	cat "$SCRIPT_DIR/sim_echo.log" || true
 fi
 
-# T8 – Statistics
+# T8 – IPv6 ping loopback via sim_echo
 echo
-echo "--- T8: driver statistics ---"
+echo "--- T8: IPv6 ping loopback via ccsds_sim_echo ---"
+if ! command -v ping6 >/dev/null 2>&1; then
+	echo "SKIP: ping6 not available"
+else
+	# IPv6 may be a loadable module; ensure it is loaded and the address
+	# is assigned before starting the test.  modprobe is a no-op when
+	# IPv6 is already loaded or built-in.
+	modprobe ipv6 2>/dev/null || true
+	ip addr add "${IPv6_LOCAL}/${IPv6_PREFIX}" dev "$NET_DEV" 2>/dev/null || true
+
+	# Snapshot rx_packets before the test so we can measure the delta.
+	RX_BEFORE=$(cat /sys/class/net/"$NET_DEV"/statistics/rx_packets \
+		    2>/dev/null || echo 0)
+
+	"$SIM_ECHO" "$SIM_DEV" 2>"$SCRIPT_DIR/sim_echo.log" &
+	SIM_PID=$!
+	sleep 1
+
+	# ping6 output format varies across BusyBox builds; verify the test
+	# through sim_echo reply count and rx_packets delta instead.
+	ping6 -c 4 -W 2 "$IPv6_PEER" >/dev/null 2>&1 || true
+	sleep 1  # wait for any in-flight replies to be processed
+
+	kill "$SIM_PID" 2>/dev/null || true
+	wait "$SIM_PID" 2>/dev/null || true
+	SIM_PID=""
+
+	RX_AFTER=$(cat /sys/class/net/"$NET_DEV"/statistics/rx_packets \
+		   2>/dev/null || echo 0)
+	RX_DELTA=$((RX_AFTER - RX_BEFORE))
+	# Count echo replies sim_echo sent back (each is one "ICMPv6 Echo Reply" line).
+	REPLIED=$(grep -c "ICMPv6 Echo Reply" "$SCRIPT_DIR/sim_echo.log" \
+		  2>/dev/null || true)
+	REPLIED=${REPLIED:-0}
+
+	if [ "${REPLIED:-0}" -gt 0 ] && [ "$RX_DELTA" -ge "${REPLIED:-0}" ]; then
+		pass "IPv6 ping loopback: sim_echo replied=$REPLIED  rx_delta=$RX_DELTA"
+	else
+		fail "IPv6 ping loopback: sim_echo replied=$REPLIED  rx_delta=$RX_DELTA"
+		cat "$SCRIPT_DIR/sim_echo.log" || true
+	fi
+fi
+
+# T9 – Statistics
+echo
+echo "--- T9: driver statistics ---"
 TX_PKT=$(cat /sys/class/net/"$NET_DEV"/statistics/tx_packets 2>/dev/null || echo 0)
 RX_PKT=$(cat /sys/class/net/"$NET_DEV"/statistics/rx_packets 2>/dev/null || echo 0)
 
@@ -205,9 +257,9 @@ else
 	fail "Stats: tx_packets=$TX_PKT  rx_packets=$RX_PKT (both should be > 0)"
 fi
 
-# T9 – Module unload
+# T10 – Module unload
 echo
-echo "--- T9: module unload ---"
+echo "--- T10: module unload ---"
 ip link set "$NET_DEV" down 2>/dev/null || true
 rmmod ccsds 2>/dev/null
 if ! lsmod | grep -q '^ccsds '; then
