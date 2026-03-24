@@ -169,7 +169,8 @@ fi
 # T7 – IPv4 ping loopback via sim_echo
 echo
 echo "--- T7: IPv4 ping loopback via ccsds_sim_echo ---"
-"$SIM_ECHO" "$SIM_DEV" 2>"$SCRIPT_DIR/sim_echo.log" &
+: > "$SCRIPT_DIR/sim_echo.log"
+"$SIM_ECHO" "$SIM_DEV" 2>>"$SCRIPT_DIR/sim_echo.log" &
 SIM_PID=$!
 sleep 1  # give it time to open the device
 
@@ -191,11 +192,12 @@ kill "$SIM_PID" 2>/dev/null || true
 wait "$SIM_PID" 2>/dev/null || true
 SIM_PID=""
 
+cat "$SCRIPT_DIR/sim_echo.log" >&2
+
 if [ "${RECEIVED:-0}" -gt 0 ]; then
 	pass "IPv4 ping loopback: $RECEIVED/4 replies received"
 else
-	fail "IPv4 ping loopback: 0 replies (sim_echo log below)"
-	cat "$SCRIPT_DIR/sim_echo.log" || true
+	fail "IPv4 ping loopback: 0 replies"
 fi
 
 # T8 – IPv6 ping loopback via sim_echo
@@ -214,7 +216,7 @@ else
 	RX_BEFORE=$(cat /sys/class/net/"$NET_DEV"/statistics/rx_packets \
 		    2>/dev/null || echo 0)
 
-	"$SIM_ECHO" "$SIM_DEV" 2>"$SCRIPT_DIR/sim_echo.log" &
+	"$SIM_ECHO" "$SIM_DEV" 2>>"$SCRIPT_DIR/sim_echo.log" &
 	SIM_PID=$!
 	sleep 1
 
@@ -226,6 +228,8 @@ else
 	kill "$SIM_PID" 2>/dev/null || true
 	wait "$SIM_PID" 2>/dev/null || true
 	SIM_PID=""
+
+	cat "$SCRIPT_DIR/sim_echo.log" >&2
 
 	RX_AFTER=$(cat /sys/class/net/"$NET_DEV"/statistics/rx_packets \
 		   2>/dev/null || echo 0)
@@ -239,7 +243,6 @@ else
 		pass "IPv6 ping loopback: sim_echo replied=$REPLIED  rx_delta=$RX_DELTA"
 	else
 		fail "IPv6 ping loopback: sim_echo replied=$REPLIED  rx_delta=$RX_DELTA"
-		cat "$SCRIPT_DIR/sim_echo.log" || true
 	fi
 fi
 
