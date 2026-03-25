@@ -5,9 +5,9 @@
  * Architecture:
  *
  *   IP layer
- *      ↕  ndo_start_xmit / netif_rx
+ *      ↕  ndo_start_xmit / netif_receive_skb
  *   [ccsdsnet]  net_device "ccsdsnet"
- *      ↕  tx_fifo (sk_buff_head)
+ *      ↕  tx_fifo / rx_fifo (sk_buff_head, one per direction)
  *   [ccsdssim]  char device  /dev/ccsdssim
  *      ↕  read() / write()
  *   User-space simulator
@@ -15,8 +15,9 @@
  * TX (IP → sim): ndo_start_xmit enqueues skb into tx_fifo;
  *                sim read() dequeues one complete packet, non-blocking.
  *
- * RX (sim → IP): sim write() builds skb from raw IP data,
- *                calls netif_rx() to inject into IP stack directly.
+ * RX (sim → IP): sim write() builds skb and enqueues into rx_fifo,
+ *                then schedules NAPI; the NAPI poll in netdev.c drains
+ *                rx_fifo and delivers each skb via netif_receive_skb().
  */
 #ifndef _CCSDS_H
 #define _CCSDS_H
@@ -47,7 +48,9 @@ struct ccsds_fifo {
  * @devno:    allocated device number (major:minor)
  * @cls:      sysfs class for auto-creating /dev/ccsdssim
  * @dev_node: sysfs device node
- * @tx_fifo:  packets queued from IP stack, consumed by sim read()
+ * @tx_fifo:  TX queue: IP stack → ccsdsnet → ccsdssim → user-space
+ * @rx_fifo:  RX queue: user-space → ccsdssim → ccsdsnet → IP stack
+ * @napi:     NAPI instance that drains rx_fifo into the IP stack
  * @stats:    device statistics (shared, updated from both sides)
  */
 struct ccsds_ctx {
@@ -59,6 +62,8 @@ struct ccsds_ctx {
 	struct device        *dev_node;
 
 	struct ccsds_fifo     tx_fifo;
+	struct ccsds_fifo     rx_fifo;
+	struct napi_struct    napi;
 
 	struct net_device_stats stats;
 };

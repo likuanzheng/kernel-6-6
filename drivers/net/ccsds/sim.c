@@ -67,11 +67,15 @@ static ssize_t sim_read(struct file *filp, char __user *buf,
 }
 
 /**
- * sim_write - receive one raw IP packet from user space and inject into stack
+ * sim_write - receive one raw IP packet from user space
  *
  * The caller must supply a complete IP packet starting at the IP header
  * (no additional framing).  IPv4/IPv6 is auto-detected from the version
  * nibble.
+ *
+ * The skb is enqueued into rx_fifo and NAPI is scheduled; the actual
+ * delivery to the IP stack happens in ccsds_napi_poll() (netdev.c).
+ * The data path is: sim_write → rx_fifo → ccsds_napi_poll → IP stack.
  */
 static ssize_t sim_write(struct file *filp, const char __user *buf,
 			  size_t count, loff_t *ppos)
@@ -80,7 +84,12 @@ static ssize_t sim_write(struct file *filp, const char __user *buf,
 	struct sk_buff *skb;
 	__be16 proto;
 	u8 version_byte;
-	int rc;
+
+	/* Reject writes if the network interface is not up: NAPI is only
+	 * active while the device is running, so packets queued with the
+	 * interface down would never be delivered. */
+	if (!netif_running(ctx->netdev))
+		return -ENETDOWN;
 
 	/* Minimum: a valid IPv4 header is 20 bytes; IPv6 is 40 bytes.
 	 * We check the stricter lower bound here and trust the IP stack
@@ -120,18 +129,10 @@ static ssize_t sim_write(struct file *filp, const char __user *buf,
 	skb->protocol = proto;
 	skb_reset_network_header(skb);
 
-	/*
-	 * netif_rx() takes ownership of skb unconditionally.
-	 * NET_RX_DROP means the backlog was full; we still report
-	 * success to the caller (the write was accepted) but track drops.
-	 */
-	rc = netif_rx(skb);
-	if (rc == NET_RX_DROP) {
-		ctx->stats.rx_dropped++;
-	} else {
-		ctx->stats.rx_packets++;
-		ctx->stats.rx_bytes += count;
-	}
+	/* Hand off to ccsdsnet's RX queue.  NAPI poll will dequeue and
+	 * deliver to the IP stack; stats are updated there too. */
+	skb_queue_tail(&ctx->rx_fifo.queue, skb);
+	napi_schedule(&ctx->napi);
 
 	return (ssize_t)count;
 }

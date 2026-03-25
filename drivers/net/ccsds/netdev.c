@@ -5,8 +5,8 @@
  * TX path: IP stack calls ndo_start_xmit → skb enqueued into tx_fifo
  *          → user-space simulator drains via /dev/ccsdssim read().
  *
- * RX path: sim.c write() builds an skb from raw IP data and calls
- *          netif_rx() directly — no intermediate queue needed.
+ * RX path: sim.c write() enqueues skb into rx_fifo and schedules NAPI;
+ *          ccsds_napi_poll() drains rx_fifo → netif_receive_skb().
  */
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
@@ -20,11 +20,49 @@ static inline struct ccsds_ctx *ctx_from_dev(struct net_device *dev)
 }
 
 /* ------------------------------------------------------------------ */
+/*  NAPI poll — RX path drain                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ccsds_napi_poll - drain rx_fifo and deliver packets to the IP stack
+ *
+ * Called by the NAPI subsystem (softirq context) after napi_schedule()
+ * is triggered by sim_write().  Dequeues up to @budget skbs from
+ * rx_fifo and hands each one to netif_receive_skb().
+ */
+static int ccsds_napi_poll(struct napi_struct *napi, int budget)
+{
+	struct ccsds_ctx *ctx = container_of(napi, struct ccsds_ctx, napi);
+	struct sk_buff *skb;
+	int done = 0;
+
+	while (done < budget) {
+		skb = skb_dequeue(&ctx->rx_fifo.queue);
+		if (!skb)
+			break;
+		ctx->stats.rx_packets++;
+		ctx->stats.rx_bytes += skb->len;
+		napi_gro_receive(napi, skb);
+		done++;
+	}
+
+	/* If we exhausted the budget the queue may still have packets;
+	 * return budget to let NAPI reschedule.  Otherwise complete. */
+	if (done < budget)
+		napi_complete_done(napi, done);
+
+	return done;
+}
+
+/* ------------------------------------------------------------------ */
 /*  net_device_ops                                                      */
 /* ------------------------------------------------------------------ */
 
 static int ccsds_ndo_open(struct net_device *dev)
 {
+	struct ccsds_ctx *ctx = ctx_from_dev(dev);
+
+	napi_enable(&ctx->napi);
 	netif_start_queue(dev);
 	return 0;
 }
@@ -34,8 +72,10 @@ static int ccsds_ndo_stop(struct net_device *dev)
 	struct ccsds_ctx *ctx = ctx_from_dev(dev);
 
 	netif_stop_queue(dev);
-	/* Discard packets that were not yet read by the simulator. */
+	napi_disable(&ctx->napi);
+	/* Discard packets that were not yet consumed in either direction. */
 	ccsds_fifo_purge(&ctx->tx_fifo);
+	ccsds_fifo_purge(&ctx->rx_fifo);
 	return 0;
 }
 
@@ -119,6 +159,11 @@ int ccsds_netdev_init(struct ccsds_ctx *ctx)
 	*priv = ctx;
 	ctx->netdev = dev;
 
+	/* Register the NAPI instance that will drain rx_fifo.
+	 * Must be done before register_netdev() so the poll function
+	 * is ready before the device can be opened. */
+	netif_napi_add(dev, &ctx->napi, ccsds_napi_poll);
+
 	ret = register_netdev(dev);
 	if (ret) {
 		free_netdev(dev);
@@ -134,7 +179,10 @@ void ccsds_netdev_exit(struct ccsds_ctx *ctx)
 {
 	if (!ctx->netdev)
 		return;
+	/* unregister_netdev() closes the device first (ndo_stop →
+	 * napi_disable), so netif_napi_del() is safe afterwards. */
 	unregister_netdev(ctx->netdev);
+	netif_napi_del(&ctx->napi);
 	free_netdev(ctx->netdev);
 	ctx->netdev = NULL;
 }

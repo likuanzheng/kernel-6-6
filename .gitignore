@@ -71,6 +71,8 @@ modules.order
 /modules.builtin.modinfo
 /modules.nsdeps
 /rootfs
+/.vscode
+/.cache
 
 #
 # RPM spec file (make rpm-pkg)

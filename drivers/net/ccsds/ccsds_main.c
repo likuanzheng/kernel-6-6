@@ -25,6 +25,7 @@ static int __init ccsds_module_init(void)
 		return -ENOMEM;
 
 	ccsds_fifo_init(&g_ccsds->tx_fifo);
+	ccsds_fifo_init(&g_ccsds->rx_fifo);
 
 	ret = ccsds_netdev_init(g_ccsds);
 	if (ret) {
@@ -54,6 +55,7 @@ static void __exit ccsds_module_exit(void)
 	ccsds_sim_exit(g_ccsds);
 	ccsds_netdev_exit(g_ccsds);
 	ccsds_fifo_purge(&g_ccsds->tx_fifo);
+	ccsds_fifo_purge(&g_ccsds->rx_fifo);
 	kfree(g_ccsds);
 	g_ccsds = NULL;
 	pr_info("ccsds: unloaded\n");
