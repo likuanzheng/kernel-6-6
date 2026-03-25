@@ -6,7 +6,7 @@
  *          → user-space simulator drains via /dev/ccsdssim read().
  *
  * RX path: sim.c write() enqueues skb into rx_fifo and schedules NAPI;
- *          ccsds_napi_poll() drains rx_fifo → netif_receive_skb().
+ *          ccsds_napi_poll() drains rx_fifo → napi_gro_receive().
  */
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>

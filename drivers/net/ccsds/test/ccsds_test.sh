@@ -17,15 +17,18 @@
 #
 # Prerequisites:
 #   - Run as root
-#   - ccsds.ko, ccsds_sim_echo, ccsds_sim_read, ccsds_inject_reply must exist
-#     (run 'make' in the test/ directory first)
+#   - ccsds.ko must be built first (run 'make' in the drivers/net/ccsds/
+#     directory using the kernel build system, e.g. make -C /lib/modules/
+#     $(uname -r)/build M=$PWD modules)
+#   - ccsds_sim_echo, ccsds_sim_read, ccsds_inject_reply must exist
+#     (run 'make' in this test/ directory)
 #   - ip, ping, awk available (standard BusyBox tools, no python3 required)
 
 set -eu
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-KO="$SCRIPT_DIR/ccsds.ko"
+KO="$(dirname "$SCRIPT_DIR")/ccsds.ko"
 SIM_ECHO="$SCRIPT_DIR/ccsds_sim_echo"
 SIM_READ="$SCRIPT_DIR/ccsds_sim_read"
 INJECT_REPLY="$SCRIPT_DIR/ccsds_inject_reply"

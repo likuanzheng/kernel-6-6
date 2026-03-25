@@ -9,7 +9,9 @@
  *           the queued packet (packet is put back at the head).
  *
  * write() – Accepts one raw IP packet (IPv4 or IPv6, including IP
- *           header).  Injects it into the IP stack via netif_rx().
+ *           header).  Enqueues it into rx_fifo and schedules NAPI;
+ *           ccsds_napi_poll() delivers it to the IP stack via
+ *           napi_gro_receive().
  */
 #include <linux/fs.h>
 #include <linux/cdev.h>

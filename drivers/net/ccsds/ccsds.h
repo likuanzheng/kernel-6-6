@@ -17,7 +17,7 @@
  *
  * RX (sim → IP): sim write() builds skb and enqueues into rx_fifo,
  *                then schedules NAPI; the NAPI poll in netdev.c drains
- *                rx_fifo and delivers each skb via netif_receive_skb().
+ *                rx_fifo and delivers each skb via napi_gro_receive().
  */
 #ifndef _CCSDS_H
 #define _CCSDS_H

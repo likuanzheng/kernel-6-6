@@ -16,3 +16,114 @@ several of them using the Restructured Text markup notation.
 Please read the Documentation/process/changes.rst file, as it contains the
 requirements for building and running the kernel, and information about
 the problems which may result by upgrading your kernel.
+
+
+# CCSDS协议开发模拟环境
+
+## 编译工作环境
+- 运行环境：Panda服务器的docker镜像, 镜像名字：`ccsds-kernel:6.6`
+- 启动开发环境：
+    ```
+        docker run -dit \
+            --name ccsds-protocol-dev \
+            -v 本地用户开发代码路径:/root/data \
+            -w /root \
+            --add-host=host.docker.internal:host-gateway \
+            -e http_proxy=http://host.docker.internal:7900 \
+            -e https_proxy=http://host.docker.internal:7900 \
+            --restart unless-stopped \
+            ccsds-kernel:6.6
+    ```
+- 进入开发环境
+    ```
+        docker attach ccsds-protocol-dev        # 附加到已经运行的终端
+        docker exec -it ccsds-dev /bin/bash     # 打开新的终端
+    ```
+
+## 代码实现
+- 内核驱动代码位置：kernel-6-6/drivers/net/ccsds，其中包含驱动程序代码和测试代码
+
+## 测试运行
+
+1. 编译内核，内核模块
+    ```
+        make -j$(nproc)
+        make dtbs
+        make modules
+    ```
+2. 打包rootfs
+    ```
+        # 拷贝内核模块ccsds.ko 到 /root/data/rootfs/opt/ccsds_test
+        cd /root/data/rootfs/
+        cp ../kernel-6-6/drivers/net/ccsds/ccsds.ko opt/ccsds_test/
+        find . | cpio -o --format=newc | gzip > ../rootfs.cpio.gz
+    ```
+3. 运行测试
+    ```
+        cd /root/data
+        qemu-system-aarch64 \
+            -machine virt \
+            -cpu cortex-a57 \
+            -m 2G \
+            -nographic \
+            -kernel /root/data/kernel-6-6/arch/arm64/boot/Image \
+            -initrd /root/data/rootfs.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/sbin/init"
+    ```
+4. 执行测试
+    ```
+        cd /opt/ccsds_test/
+        sh ccsds_test.sh
+    ```
+
+# 测试用例讲解
+
+## Ping4的执行路径
+```
+ IPv4 ping 10.99.1.2
+                                                                                                                                               
+  ping 进程       
+    │
+    ▼  目的地 10.99.1.2 不是本机地址                                                                                                           
+       路由表命中：10.99.1.0/24 dev ccsdsnet                                                                                                   
+       → 出口网卡是 ccsdsnet，不走内核 loopback                                                                                                
+    │                                                                                                                                          
+    ▼  【经过驱动 TX】
+    ccsds_ndo_start_xmit()                                                                                                                     
+    → tx_fifo → ccsds_sim_echo 读走
+    → 在用户态翻转 src/dst，改为 Echo Reply                                                                                                    
+    │                                                                                                                                          
+    ▼  【经过驱动 RX】                                                                                                                         
+    sim_write() → rx_fifo → NAPI → napi_gro_receive()                                                                                          
+    → IP 栈识别目的地 10.99.1.1（本机地址）
+    → 投递给 ping 进程                                                                                                                         
+   
+  关键点：目的地 10.99.1.2 不是本机地址，内核不会走 loopback 快捷路径，强制走 ccsdsnet 出口。
+```
+
+## ping6的执行路径
+
+```
+IPv6 ping6 fd00::2
+                                                                                                                                               
+  ping6 进程
+    │                                                                                                                                          
+    ▼  路由命中：fd00::/64 dev ccsdsnet
+    │
+    ▼  【经过驱动 TX】NDP 阶段                                                                                                                 
+    内核发 Neighbor Solicitation（询问 fd00::2 的链路层地址）
+    → ndo_start_xmit → tx_fifo                                                                                                                 
+    → ccsds_sim_echo 读走，handle_ipv6() 识别 ND_NEIGHBOR_SOLICIT                                                                              
+    → 构造 Neighbor Advertisement 写回                                                                                                         
+    【经过驱动 RX】→ rx_fifo → NAPI → IP 栈更新邻居表                                                                                          
+    │                                                                                                                                          
+    ▼  【经过驱动 TX】Echo Request
+    ndo_start_xmit → tx_fifo                                                                                                                   
+    → ccsds_sim_echo 读走，识别 ICMP6_ECHO_REQUEST
+    → 翻转地址，改为 Echo Reply，重算 ICMPv6 checksum
+    【经过驱动 RX】→ rx_fifo → NAPI → IP 栈 → ping6 进程
+```
+
+
+
+
